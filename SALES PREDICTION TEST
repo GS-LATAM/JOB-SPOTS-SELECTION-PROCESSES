@@ -1,0 +1,652 @@
+#Importing usefull libraries
+import tensorflow as tf
+from tensorflow import keras
+import pandas as pd
+import datetime
+from datetime import date
+from datetime import timedelta 
+from datetime import datetime
+import plotly.graph_objects as go
+import bt
+import matplotlib as mtb
+from matplotlib import pyplot as plt
+%matplotlib inline
+import seaborn as sns
+import numpy as np
+import plotly.express as px
+import sklearn
+from sklearn.preprocessing import LabelEncoder
+
+#This notebook is left basically as an calc memory. Just so you can see the way through the thinking and not only the result of it
+
+#Just taking a look at the data
+df_raw=pd.read_csv('train.csv') 
+df_raw.head()
+
+df_raw.shape
+
+df_raw.info()
+
+df_raw_stats = df_raw.describe(include='all')
+df_raw_stats = df_raw_stats.transpose()
+df_raw_stats
+
+list_user_id=list (df_raw['User_ID'].drop_duplicates())
+len (list_user_id)
+
+list_product_id=list (df_raw['Product_ID'].drop_duplicates())
+len (list_product_id)
+
+list_occupation=list (df_raw['Occupation'].drop_duplicates())
+len (list_occupation)
+
+list_pc1=list (df_raw['Product_Category_1'].drop_duplicates())
+len (list_pc1)
+
+list_pc2=list (df_raw['Product_Category_2'].drop_duplicates())
+len (list_pc2)
+
+list_pc3=list (df_raw['Product_Category_3'].drop_duplicates())
+len (list_pc3)
+
+df_work=df_raw.copy()
+
+#First takeaways are: lots of NA for product category #2 and #3. Must explore it and see if there's a pattern
+
+#lowering the headers so we don't get crazy
+lower_columns=df_work.columns.to_list()
+lower_columns= [column.lower() for column in lower_columns]
+df_work.columns = lower_columns
+
+#First approach for the categorical features. For printing reasons I've left it with the label encoder and not the one hot encoding, since user_id and product_id amont of unic values would generate a huge dataframe making a difficult visual.
+label_encoder = LabelEncoder()
+to_be_coded_columns = ['user_id', 'product_id', 'gender', 'age', 'city_category', 'stay_in_current_city_years']
+for column in to_be_coded_columns:
+    df_work[column+'_coded']=label_encoder.fit_transform(df_work[column])
+
+df_work=df_work.drop(to_be_coded_columns, axis=1)
+
+#Let's see what we have for that product_id NAs.
+
+z = df_work['product_id_coded'].value_counts()
+
+z
+
+df_mask=df_work['product_id_coded']==249
+df_man = df_work[df_mask]
+df_man.shape
+
+df_man.head()
+
+#Taking a closer look at the user ID you can see that we're dealing with sub-categories, since for each product_id you got always the same values for product_categories one to tree.
+
+df_work.fillna(0, inplace=True)
+
+df_work.info()
+
+#MUCH BETTER NOW WITH NO NAs
+
+#It takes a while but this is one good way to take a look at the whole data
+sns.pairplot(df_work, diag_kind="kde")
+
+#hmmmm product_category_1 has a very binned relation with the purchase. Interesting. 
+#Also you can see the concentration on gender and age.
+#Worth noticing that the purchase seems "spiky". That seems to bins in prices (confirmed by the following plot)
+#Not really any outliers
+
+fig=px.histogram(df_raw, x='Purchase')
+fig.show()
+
+correlation=df_work
+corr = correlation.corr()
+fig = px.imshow(corr, range_color=[-1,1])
+fig.show()
+
+correlation=df_work
+corr = correlation.corr(method='kendall')
+fig = px.imshow(corr, range_color=[-1,1])
+fig.show()
+
+#From the correlation plots you have very few stuff over 0,3. bad news.
+
+#Closer look at the product_category_1 bins we talked previously
+fig=px.scatter(df_work, x='purchase', y='product_category_1', hover_data=['product_category_2', 'product_category_3', 'product_id_coded'])
+fig.show()
+
+#Product_category_1 bins number 1, 5 and 8 are responsible for much of the income.
+fig = px.histogram(df_work, x="product_category_1", y='purchase')
+fig.show()
+
+#Enought talking. Let's see what the ML libraries bring to us. That product_category_1 looks important
+
+#let's make the initial features selection and firsts predictions
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_selection import SelectFromModel
+
+df_dum = df_work.copy()
+
+
+a=df_dum.pop('purchase')
+b=df_dum
+
+
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(b, a, test_size=0.3) #plain vanilla split
+
+rfr=RandomForestRegressor(n_estimators = 100, max_depth=20) #a bit of iteration here to find the shown values, having a compromise of processing time and eval. performance
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train, y_train)
+
+sel.get_support()
+
+selected_feat= X_train.columns[(sel.get_support())]
+print (selected_feat)
+
+#Ta-dah! There's the most important feature, as we forecasted.
+
+rfr.fit(X_train, y_train)
+
+importances = rfr.feature_importances_ #just checking
+
+plt.bar(height=importances, x=X_train.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test)
+
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_squared_error
+from sklearn.metrics import r2_score
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+# Log for better results through explorative iteration: 1992.79 7278111.83 2697.8 0.71
+
+#Not very good. R2 shows that we're going at least to the right trend but MAE and MSE shows that we are with a very wide error
+
+#This far, any of the above parameters would do a good job at the evaluation. Since we don't have really outliers, RMSE is widely used and could be the one to easier compare different models and targets.
+
+#in here i'm keeping all them together so we can see the same the target's same unity of measure at MAE, trend at R2, comparison to previous knowledge benchmark at RMSE
+
+#Let's see what happens if we take away a couple features. For bigger datasets might be usefull to properly sort them.
+
+df_dum = df_work.copy()
+
+
+df_dum.shape
+
+X_train_exp = X_train.copy()
+X_test_exp = X_test.copy()
+y_train_exp = y_train.copy()
+y_test_exp = y_test.copy()
+
+X_train_exp.pop('product_id_coded') 
+X_test_exp.pop('product_id_coded')  
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train_exp, y_train_exp)
+
+sel.get_support()
+
+selected_feat= X_train_exp.columns[(sel.get_support())]
+print (selected_feat)
+
+rfr.fit(X_train_exp, y_train_exp)
+
+importances = rfr.feature_importances_
+
+plt.bar(height=importances, x=X_train_exp.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test_exp)
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+# 2117.6286501675872 8200762.344786993 2863.69732073538
+#Taking away the product ID its kind of a bit worse
+
+
+
+
+
+X_train_exp = X_train.copy()
+X_test_exp = X_test.copy()
+y_train_exp = y_train.copy()
+y_test_exp = y_test.copy()
+
+
+X_train_exp.pop('marital_status') 
+X_test_exp.pop('marital_status')  
+X_train_exp.pop('gender_coded') 
+X_test_exp.pop('gender_coded')  
+X_train_exp.pop('city_category_coded') 
+X_test_exp.pop('city_category_coded')  
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train_exp, y_train_exp)
+
+sel.get_support()
+
+selected_feat= X_train_exp.columns[(sel.get_support())]
+print (selected_feat)
+
+rfr.fit(X_train_exp, y_train_exp)
+
+importances = rfr.feature_importances_
+
+plt.bar(height=importances, x=X_train_exp.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test_exp)
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+# 2117.6286501675872 8200762.344786993 2863.69732073538
+#Taking away the product ID its kind of a bit worse
+
+
+
+
+
+
+
+X_train_exp = X_train.copy()
+X_test_exp = X_test.copy()
+y_train_exp = y_train.copy()
+y_test_exp = y_test.copy()
+
+X_train_exp.pop('user_id_coded') 
+X_test_exp.pop('user_id_coded')  
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train_exp, y_train_exp)
+
+sel.get_support()
+
+selected_feat= X_train_exp.columns[(sel.get_support())]
+print (selected_feat)
+
+rfr.fit(X_train_exp, y_train_exp)
+
+importances = rfr.feature_importances_
+
+plt.bar(height=importances, x=X_train_exp.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test_exp)
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+# 2026.6713874073894 7577772.844383542 2752.7754801987653
+#Same thing here without user_id. bit worse
+
+X_train_exp = X_train.copy()
+X_test_exp = X_test.copy()
+y_train_exp = y_train.copy()
+y_test_exp = y_test.copy()
+
+X_train_exp.pop('user_id_coded') 
+X_test_exp.pop('user_id_coded')  
+X_train_exp.pop('product_id_coded') 
+X_test_exp.pop('product_id_coded') 
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train_exp, y_train_exp)
+
+sel.get_support()
+
+selected_feat= X_train_exp.columns[(sel.get_support())]
+print (selected_feat)
+
+rfr.fit(X_train_exp, y_train_exp)
+
+importances = rfr.feature_importances_
+
+plt.bar(height=importances, x=X_train_exp.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test_exp)
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+# 2173.5841490952857 8694141.44854482 2948.582956022235
+# Taking away product_id and User_id we see a strong worsening. We should keep those features around.
+
+df_dum = df_work.copy()
+
+
+df_dum.shape
+
+a=df_dum.pop('purchase')
+b=df_dum
+
+
+b.columns
+
+from sklearn.preprocessing import StandardScaler
+for col in b.columns:
+    b[col]=StandardScaler().fit_transform(b[col].values.reshape(-1, 1))
+
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(b, a, test_size=0.3)
+
+rfr=RandomForestRegressor(n_estimators = 100, max_depth=20)
+
+sel = SelectFromModel(rfr)
+sel.fit(X_train, y_train)
+
+sel.get_support()
+
+selected_feat= X_train.columns[(sel.get_support())]
+print (selected_feat)
+
+rfr.fit(X_train, y_train)
+
+importances = rfr.feature_importances_
+
+plt.bar(height=importances, x=X_train.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction = rfr.predict(X_test)
+
+mae = round (mean_absolute_error(y_test, prediction), 2)
+mse = round (mean_squared_error(y_test, prediction), 2)
+r2 = round (r2_score(y_test, prediction), 2)
+rmse = round (np.sqrt(mse), 2)
+print (mae, mse, rmse, r2)
+
+import pickle
+
+Pkl_Filename = "sales_prediction.pkl"  
+
+with open(Pkl_Filename, 'wb') as file:  
+    pickle.dump(rfr, file)
+
+#1992.79 7278111.83 2697.8 0.71
+#Reshaping didn't quite helped the results
+
+#Visual aid of what we noted before: right trend, but wide errors
+fig=px.scatter(x=y_test, y=prediction, trendline='ols')
+fig.show()
+
+evaluation = pd.DataFrame()
+evaluation['labels'] = y_test
+evaluation['prediction'] = prediction
+evaluation['error'] = evaluation['prediction'] - evaluation['labels']
+
+fig = px.scatter(evaluation, x="prediction", y='error', trendline='ols')
+fig.show()
+
+fig = px.histogram(evaluation, x='error')
+fig.show()
+
+#error looks kind of "normal", which is good but has a way to big kurtosis.
+
+fig = px.histogram(evaluation, x="prediction", y='error', nbins=10, histfunc='avg')
+fig.show()
+
+#Due to the nature of the test data (randomly selected), one alternative would be to correct models forcast by the average error of each bin above and check at traindata if it would e much of an overfitting. 
+#But for the robustness to a general case where not necessarily data would be randomly selected and we have more data to understand if there's a trend in time, for example, I'll let the example as it is.
+
+#Let's see if Keras regressor can help us
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+
+train_dataset = X_train.copy()
+test_dataset = X_test.copy()
+train_labels = y_train.copy()
+test_labels = y_test.copy()
+
+#This is a configuration I got from previous opportunities. Mixing ReLu and Swish activation help us to better reults, mainly due to beta parameter at Swish
+def build_model():
+  model = keras.Sequential([
+    layers.Dense(64, activation='relu', input_shape=[len(train_dataset.keys())]),
+    layers.Dense(64, activation='relu'),
+    layers.Dense(64, activation='swish'),
+    layers.Dense(64, activation='relu'),
+    layers.Dense(64, activation='swish'),
+    layers.Dense(64, activation='relu'),
+    layers.Dense(64, activation='swish'),
+    layers.Dense(1)
+  ])
+
+  optimizer = tf.keras.optimizers.RMSprop(0.001)
+
+  model.compile(loss='mse',
+                optimizer=optimizer,
+                metrics=['mae', 'mse'])
+  return model
+
+model = build_model()
+
+# Mostra o progresso do treinamento imprimindo um único ponto para cada epoch completada
+class PrintDot(keras.callbacks.Callback):
+  def on_epoch_end(self, epoch, logs):
+    if epoch % 100 == 0: print('')
+    print('.', end='')
+
+EPOCHS = 200 #tried to 1000 as picture shown. But 200 is already to much
+
+history = model.fit(
+  train_dataset, train_labels,
+  epochs=EPOCHS, validation_split = 0.2, verbose=0,
+  callbacks=[PrintDot()])
+
+hist = pd.DataFrame(history.history)
+hist['epoch'] = history.epoch
+hist.tail()
+
+def plot_history(history):
+  hist = pd.DataFrame(history.history)
+  hist['epoch'] = history.epoch
+
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Abs Error [purchase]')
+  plt.plot(hist['epoch'], hist['mae'],
+           label='Train Error')
+  plt.plot(hist['epoch'], hist['val_mae'],
+           label = 'Val Error')
+  plt.ylim([2000,3000])
+  plt.legend()
+
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Square Error [$purchase^2$]')
+  plt.plot(hist['epoch'], hist['mse'],
+           label='Train Error')
+  plt.plot(hist['epoch'], hist['val_mse'],
+           label = 'Val Error')
+  plt.ylim([800000,16000000])
+  plt.legend()
+  plt.show()
+
+
+plot_history(history)
+
+Yes I tried 1000 epochs... See that after a bit it becomes useless. Thank God for the earlystop callback
+![image.png](attachment:image.png)
+
+model2 = build_model()
+
+# O parâmetro patience é o quantidade de epochs para checar as melhoras
+early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+
+history2 = model2.fit(train_dataset, train_labels, epochs=EPOCHS,
+                    validation_split = 0.2, verbose=0, callbacks=[early_stop, PrintDot()])
+
+plot_history(history2)
+
+loss, mae, mse = model.evaluate(test_dataset, test_labels, verbose=2)
+
+print("Testing set Mean Abs Error: {:5.2f} purchase".format(mae))
+
+loss, mae, mse = model2.evaluate(test_dataset, test_labels, verbose=2)
+
+print("Testing set Mean Abs Error: {:5.2f} purchase".format(mae))
+
+#mae: 2149.1245 - mse: 8623112.0000
+#Well Keras didn't helped much at the forecasts errors
+
+test_predictions = model.predict(test_dataset).flatten()
+
+plt.scatter(test_labels, test_predictions)
+plt.xlabel('True Values [purchase]')
+plt.ylabel('Predictions [purchase]')
+plt.axis('equal')
+plt.axis('square')
+plt.xlim([0,plt.xlim()[1]])
+plt.ylim([0,plt.ylim()[1]])
+_ = plt.plot([-100, 100], [-100, 100])
+
+
+
+
+
+#Let's see if we can change this to a classification issue trying to forecast the bins we saw. Let's try with the product_id_1
+
+df_mask=df_work['product_category_1']==1
+df_man = df_work[df_mask]
+
+dtebins = [-1, 6000, 10000, 14000, 18000, 20000]
+dtelabels = [1,2,3,4, 5]
+#dtelabels = ['under_5','10_to_5','15_to_10','20_to_15', '25_to_20', '30_to_25', '30+']
+df_man['binned'] = pd.cut(df_man['purchase'], bins=dtebins, labels=dtelabels)
+
+correlation=df_man
+corr = correlation.corr()
+fig = px.imshow(corr, range_color=[-1,1])
+fig.show()
+
+sns.pairplot(df_man, diag_kind="kde")
+
+fig = px.scatter(df_man, x='purchase', y='purchase')
+fig.show()
+
+X_test.shape
+
+X_train.shape
+
+from sklearn.ensemble import RandomForestClassifier
+
+df_dum = df_man.copy()
+
+
+df_dum.shape
+
+a=df_dum.pop('binned')
+b=df_dum
+df_dum.pop('purchase')
+
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(b, a, test_size=0.3)
+
+rfc=RandomForestClassifier(n_estimators = 100, max_depth=50)
+
+
+sel = SelectFromModel(rfc)
+sel.fit(X_train, y_train)
+
+sel.get_support()
+
+selected_feat= X_train.columns[(sel.get_support())]
+print (selected_feat)
+
+rfc.fit(X_train, y_train)
+
+importances = rfc.feature_importances_
+
+plt.bar(height=importances, x=X_train.columns)
+plt.xticks(rotation='vertical')
+plt.show()
+
+prediction=rfc.predict(X_test)
+
+from sklearn.metrics import accuracy_score
+accuracy_score(y_test, prediction)
+
+#0.37571828845514554 Accuracy. Not good at all
+
+from sklearn.metrics import confusion_matrix
+confusion_matrix(y_test, prediction)
+
+#Confusion matrix shows that we could not find a pattern, through the less important features, to classify the purchases to a bin
+
+TT
+
+# WRAP UP
+
+Not sistematically, but best performance was achieved with scaled traindata.
+Sistematically best results were achieved with all columns, although the improvement was sometimes marginal.
+Sistematically best performance was achieved with sklearn randomforest regressor.
+For bigger datasets, would be important to drop the less important features to improve computational resources.
+Definitelly it's a good idea, for this issue, to explore bins usage and classification in further explore
+Pipeline to be used: 
+
+df_raw=pd.read_csv('train.csv') 
+
+df_work=df_raw.copy()
+
+lower_columns=df_work.columns.to_list()
+lower_columns= [column.lower() for column in lower_columns]
+df_work.columns = lower_columns
+
+label_encoder = LabelEncoder()
+to_be_coded_columns = ['user_id', 'product_id', 'gender', 'age', 'city_category', 'stay_in_current_city_years']
+for column in to_be_coded_columns:
+    df_work[column+'_coded']=label_encoder.fit_transform(df_work[column])
+
+df_work=df_work.drop(to_be_coded_columns, axis=1)
+
+df_work.fillna(0, inplace=True)
+
+df_dum = df_work.copy()
+
+
+target=df_dum.pop('purchase')
+features=df_dum
+
+
+from sklearn.preprocessing import StandardScaler
+for col in features.columns:
+    features[col]=StandardScaler().fit_transform(features[col].values.reshape(-1, 1))
+
+with open('sales_prediction.pkl', 'rb') as file:  
+    rfr = pickle.load(file)
+
+rfr
+
+prediction = rfr.predict(features)
+
+
+
+#Next steps:
+#Use gridsearch to optmize parameters for the random forest regressor with full features that leaded to better results.
